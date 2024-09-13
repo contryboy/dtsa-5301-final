@@ -1,0 +1,246 @@
+---
+title: "Covid-19 data analysis"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-09-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+## Data source
+
+The data is found on this page: <https://github.com/CSSEGISandData/COVID-19>
+
+Quoted from the page:
+
+`This is the data repository for the 2019 Novel Coronavirus Visual Dashboard operated by the Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE). Also, Supported by ESRI Living Atlas Team and the Johns Hopkins University Applied Physics Lab (JHU APL).`
+
+## Question of interest
+
+COVID19 has affected most of the people in the world, and different countries take different actions to deal with it. To some degree, the "cases per population" and "deaths per population" are indicators to tell how well it is controlled.
+
+In this report, I am going to compare the top cases/deaths countries, and look especially into the data in China, since it is a country with a big population and it has a very strict policy on controlling cases.
+
+```{r libraries}
+library(conflicted)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+```
+
+```{r import_data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c(
+  "time_series_covid19_confirmed_US.csv",
+  "time_series_covid19_confirmed_global.csv",
+  "time_series_covid19_deaths_US.csv",
+  "time_series_covid19_deaths_global.csv",
+  "time_series_covid19_recovered_global.csv")
+urls <- str_c(url_in, file_names)
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+us_cases <- read_csv(urls[1])
+us_deaths <- read_csv(urls[3])
+
+uid_lookup_url <- "https://github.com/CSSEGISandData/COVID-19/raw/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, iso2, iso3, code3, Admin2))
+
+```
+
+```{r transform_global_data}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+  names_to = "date",
+  values_to = "cases") %>%
+  select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+  names_to = "date",
+  values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+# Join cases and deaths to a new var
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = "Country/Region",
+         Province_State = "Province/State") %>%
+  mutate(dat = mdy(date))
+
+# Filter out row with 0 cases
+global <- global %>% dplyr::filter(cases > 0)
+
+# Create "Combined_Key" column
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+# Join uid for population
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+
+# Total cases/deaths of each country/region at each day
+global_by_country_region <- global %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill,
+         Population) %>%
+  ungroup()
+
+# Total cases/deaths of each country/region all the time
+global_country_region_totals <- global_by_country_region %>%
+  group_by(Country_Region) %>%
+  summarize(cases = max(cases), deaths = max(deaths),
+            Population = max(Population),
+            cases_per_thou = cases * 1000 / Population,
+            deaths_per_thou = deaths * 1000 / Population) %>%
+  dplyr::filter(Population > 0) %>%
+  ungroup()
+```
+
+## Compare cases between countries
+
+First, I will select the top 10 countries with the most cases, and plot cases per thousand population.
+
+```{r top_10_cases, out.width="50%"}
+global_country_region_totals %>%
+  slice_max(cases, n=10) %>%
+  arrange(cases) %>%
+  mutate(Country_Region=factor(Country_Region, levels=Country_Region)) %>% 
+  ggplot(aes(x = Country_Region, y = cases)) +
+  geom_bar(stat = "identity", color = "steelblue", fill = "steelblue") +
+  coord_flip() +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Top 10 countries with COVID19 cases", y = NULL, x = NULL)
+
+global_country_region_totals %>%
+  slice_max(cases, n=10) %>%
+  arrange(cases) %>%
+  mutate(Country_Region=factor(Country_Region, levels=Country_Region)) %>% 
+  ggplot(aes(x = Country_Region, y = cases_per_thou)) +
+  geom_bar(stat = "identity", color = "steelblue", fill = "steelblue") +
+  coord_flip() +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "COVID19 cases per thousand population", y = NULL, x = NULL)
+```
+
+From the plot we can see that in terms of absolute number of cases, the US is the top 1, and it has more than twice as many cases as the second place, which is India. And other countries have relatively similar cases.
+
+When we check the "cases per thousand" plot, we can see the US is similar to other countries. So from this point of view, the US is not doing that badly. And India has a very low value, further analysis would be needed to understand why.
+
+## Compare deaths between countries
+
+Second, I will select the top 10 countries with the most deaths, and plot the deaths per thousand population.
+
+```{r top_10_deaths, out.width="50%"}
+global_country_region_totals %>%
+  slice_max(deaths, n=10) %>%
+  arrange(deaths) %>%
+  mutate(Country_Region=factor(Country_Region, levels=Country_Region)) %>% 
+  ggplot(aes(x = Country_Region, y = deaths)) +
+  geom_bar(stat = "identity", color = "steelblue", fill = "steelblue") +
+  coord_flip() +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Top 10 countries with COVID19 deaths", y = NULL, x = NULL)
+
+global_country_region_totals %>%
+  slice_max(deaths, n=10) %>%
+  arrange(deaths) %>%
+  mutate(Country_Region=factor(Country_Region, levels=Country_Region)) %>% 
+  ggplot(aes(x = Country_Region, y = deaths_per_thou)) +
+  geom_bar(stat = "identity", color = "steelblue", fill = "steelblue") +
+  coord_flip() +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "COVID19 deaths per thousand population", y = NULL, x = NULL)
+```
+In terms of the death value, the US is still the top 1 in absolute value, but checking the "deaths per Thousand" plot, it is among the average countries. 
+Peru has many deaths about twice as high as the other countries, and India again has a very low value. Further analysis is required to understand the reason.
+
+## How is China doing?
+
+As we all know, China has a very large population, and has suffered from COVID19 since the very beginning. However, it is not listed in the top 10 countries in terms of total cases. Let's take a look into more details by comparing it with the US data.
+
+First let's plot the cases in the time series.
+
+```{r china_detail, out.width="50%"}
+global_by_country_region %>%
+  mutate(date = mdy(date)) %>%
+  dplyr::filter(Country_Region == "China") %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(colour = Country_Region)) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 cases in China", x = NULL, y = NULL)
+
+global_by_country_region %>%
+  mutate(date = mdy(date)) %>%
+  dplyr::filter(Country_Region == "China" | Country_Region == "US" ) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(colour = Country_Region)) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 cases in China and US", x = NULL, y = NULL)
+```
+
+From the first plot we can see the cases in China are kept very low till March 2022. The reason is that China has imposed a strict "Dynamic Clearing" policy to keep cases down. There are two outbreaks in the plot:
+
+1\. The outbreak around March 2022 was due to the new "Omicron variant".
+
+2\. The outbreak around December 2023 was because China stopped the "Dynamic Clearing" policy.
+
+Comparing with the US cases in the second plot, we can see the difference in cases is quite obvious, the strict policy in China keeps the total cases much lower. And from this point of view, China is doing better at controlling the cases.
+
+## Data model
+
+In this section, I will use a model to test the hypothesis that, globally, the deaths are linear to cases, and deaths_per_thou are linear to cases_per_thou.
+
+```{r data_model, out.width="50%"}
+mod_deaths <- lm(deaths ~ cases, data = global_country_region_totals)
+mod_deaths_per_thou <- lm(deaths_per_thou ~ cases_per_thou, data = global_country_region_totals)
+
+global_country_region_totals_w_pred <- global_country_region_totals %>%
+  mutate(deaths_pred = predict(mod_deaths),
+         deaths_per_thou_pred = predict(mod_deaths_per_thou),)
+
+global_country_region_totals_w_pred %>%
+  ggplot() +
+  geom_point(aes(x = cases, y = deaths), color = "steelblue") +
+  geom_point(aes(x = cases, y = deaths_pred), color = "red") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "COVID19 deaths predicted", x = NULL, y = NULL)
+
+global_country_region_totals_w_pred %>%
+  ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "steelblue") +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou_pred), color = "red") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "COVID19 deaths per thouand predicted", x = NULL, y = NULL)
+```
+As we can see, both models are somewhat fit with the data but with big residuals. Which means if we predict the deaths only from cases, it is not quite accurate. I think we need to consider more factors to the deaths, e.g. number of hospitals, economic conditions, age, etc.
+
+## Summary and conclusion
+
+In this report I utilized the COVID19 data from Johns Hopkins University to do some analysis. Compared the cases and deaths of the top countries, took a close look at the China data and finally created two models to analyze the relationship between cases and deaths.
+
+The analysis raised some uncertain questions which would require further analysis to answer.
+
+Some bias might exist in the data source in where the data come from, and how they are collected.
+Some results might also be biased that, not every aspect was considered. For example, cases are well controlled in China, which is good, but the side effect of that is not take in to account.

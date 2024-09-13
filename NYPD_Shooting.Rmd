@@ -1,0 +1,187 @@
+---
+title: "NPYD Shooting Incident"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-06-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Data description
+
+The data is found on this page: https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year (2013 in this case). This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. 
+
+A description of the data can be found here: https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data
+
+```{r import}
+
+library(tidyverse)
+library(plyr)
+library(ggplot2)
+library(lubridate)
+  
+input_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shooting <- read_csv(input_url)
+summary(shooting)
+```
+
+## Tidy and Transform
+
+Looking at the data structure, there is no need to pivoting any columns.
+
+1. For my analysis purpose, I will keep the following interesting information
+OCCUR_DATE OCCUR_TIME BORO STATISTICAL_MURDER_FLAG PERP_AGE_GROUP PERP_SEX PERP_RACE VIC_AGE_GROUP VIC_SEX VIC_RACE
+```{r tidy-select-column}
+shooting <- shooting %>% 
+  select(OCCUR_DATE, OCCUR_TIME, BORO, STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE)
+```
+
+2. Check the unique values of each column that we want to convert to factor
+```{r tidy-unique-values}
+map_df(shooting %>% select(-c(OCCUR_DATE, OCCUR_TIME, BORO)), ~tibble( unique_values = toString(unique(.))))
+```
+From the result we can see there are some thing needs to be cleaned up. We doing so by convert all unknown or unreasonable data to NA
+```{r tidy-clean-values}
+shooting$PERP_AGE_GROUP = mapvalues(shooting$PERP_AGE_GROUP, from=c("224","940", "1020", "1028", "UNKNOWN", "(null)"), to=rep(NA, 6))
+shooting$PERP_SEX = mapvalues(shooting$PERP_SEX, from=c("(null)","U"), to=rep(NA, 2))
+shooting$PERP_RACE = mapvalues(shooting$PERP_RACE, from=c("(null)", "UNKNOWN"), to=rep(NA, 2))
+shooting$VIC_AGE_GROUP = mapvalues(shooting$VIC_AGE_GROUP, from=c("1022", "UNKNOWN"), to=rep(NA, 2))
+shooting$VIC_SEX = mapvalues(shooting$VIC_SEX, from=c("U"), to=rep(NA, 1))
+shooting$VIC_RACE = mapvalues(shooting$VIC_RACE, from=c("UNKNOWN"), to=rep(NA, 1))
+map_df(shooting %>% select(-c(OCCUR_DATE, OCCUR_TIME, BORO)), ~tibble( unique_values = toString(unique(.))))
+```
+
+Following data type should be transformed:
+OCCUR_DATE: Date
+PERP_AGE_GROUP PERP_SEX PERP_RACE VIC_AGE_GROUP VIC_SEX VIC_RACE: Factor
+```{r tidy}
+shooting <- shooting %>% 
+  mutate(OCCUR_DATE=mdy(OCCUR_DATE)) %>%
+  mutate(PERP_AGE_GROUP=factor(PERP_AGE_GROUP)) %>%
+  mutate(PERP_SEX=factor(PERP_SEX)) %>%
+  mutate(PERP_RACE=factor(PERP_RACE)) %>%
+  mutate(VIC_AGE_GROUP=factor(VIC_AGE_GROUP)) %>%
+  mutate(VIC_SEX=factor(VIC_SEX)) %>%
+  mutate(VIC_RACE=factor(VIC_RACE))
+summary(shooting)
+```
+
+After that, we can see it contains reasonable data or NA's. For the NA's we will leave them as the are,
+and we will probabably convert/filter them later when necessary.
+
+## Analysis and Visualisation
+
+### Shooting occurrances by year
+At first, I want to group the shootings by year for the whole city, and plot it.
+
+```{r plot-by-year}
+shooting %>% mutate(year=(year(OCCUR_DATE))) %>%
+  ggplot(aes(x=year))  + 
+  geom_bar(fill = "blue", show.legend = FALSE) +
+  geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.5) +
+  labs(title="Shooting occurances in New York",
+       x="Years (2016-2023)", y="Occurances")
+
+```
+
+From the plot we can see the shooting occurances in NewYork decreases in general from 2005 to 2019, and
+there is a sudden incrase in 2020, 2021 and then going down slowly. It seems unusual that after several
+years of decrease it increased suddenly, it may worth for further investigation.
+
+### Shooting occurance by borough
+
+Next I would like to visualize over all the years the occurances in each brough.
+
+```{r plot-by-borough}
+shooting %>% 
+  ggplot(aes(x=BORO, fill=BORO)) + geom_bar() + 
+  geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.5) +
+  labs(title="Shooting occurances in New York (2016-2023)",
+       x="Borough", y="Occurances")
+
+```
+From the plot we can see the occurances vary quite much, the question is why? Is it because some
+borough is safer than others or it is much smaller so the occurances are also smaller? It may
+also worth to further investigat.
+
+
+### Shooting occurance by Perpetrator’s race
+
+Next I would like to visualize the occurances by perpetrator's race
+```{r plot-by-race}
+shooting %>% 
+  ggplot(aes(x = PERP_RACE, fill = PERP_RACE)) + 
+  geom_bar() + 
+  geom_text(stat='count', aes(label=after_stat(count)), vjust=-0.5) +
+  labs(title="Shooting occurances in New York (2016-2023)",
+       x="Perpetrator's race", y="Occurances") +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+```
+
+From the plot we can see there are quite some missing data, and for those not missing, the race "BLACK"
+is quite high. It may worth to furhter investigate why. If it is true that most of the shootings are by
+blacks? or is there some possible issue in data collection?
+
+## Modeling
+
+First plot the totoal incidents and murder per year
+```{r plot-by-murder}
+shooting_by_year_with_murder <- shooting %>%
+  mutate(Year = year(OCCUR_DATE)) %>%
+  group_by(Year) %>%
+  dplyr::summarize(Incidents = n(), Murder = sum(STATISTICAL_MURDER_FLAG), .groups = "drop")
+
+shooting_by_year_with_murder %>%
+  ggplot(aes(x = Year)) +
+  geom_line(aes(y = Incidents, color = "Shootings")) +
+  geom_line(aes(y = Murder, color = "Murder")) +
+  geom_point(aes(y = Incidents, color = "Shootings")) +
+  geom_point(aes(y = Murder, color = "Murder")) +
+  labs(title = "Incidents by Year",
+  x = "Year",
+  y = "Number of Incidents",
+  color = "Incidents") +
+  theme_minimal()
+```
+It looks the number of murders is correlated with the total incidents, let's try to model it using linear model.
+
+```{r model-murder}
+ggplot(shooting_by_year_with_murder, aes(x = Incidents, y = Murder)) +
+geom_point() +
+geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "red") +
+labs(title = "Murders by Shottings (Linear Regression Model)",
+x = "Number of Incidents",
+y = "Number of Murders") +
+theme_minimal()
+```
+From the plot we can see these two variables correlate with each other quite well, i.e. when there are more
+shootings, there are more murders.
+
+## Conclusion and possible sources of bias
+
+In this small project I imported, tidied, transformed and visualized the shooting data in New York bwetten 
+2006 and 2023. 
+
+There are some thing unusual observed from the visualization, and identified some questions that may worth
+to further investigate.
+
+There are might be some sources of bias in the data, e.g.
+
+1. How the data is collection?
+2. Is it complete, could there be systematic bias that course certrain data missing?
+
+And there could personal biases during the process and analysis, e.g.
+
+1. One may have a biased impression of which boroughs is safe/unsafe
+2. One may have a biased impression of races/sexes
+
+```{r}
+sessionInfo()
+```
